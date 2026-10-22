@@ -1,5 +1,8 @@
 # NotesApp
 
+**Name:** Congwen Liu
+**Student ID:** 2023905941
+
 A small grades application used throughout the Computer Security course. Teachers
 record grades and comments for their classes, students read their own grades, and an
 admin manages users and classes.
