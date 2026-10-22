@@ -28,6 +28,9 @@ DB_USER = os.environ.get("DB_USER", "notesapp")
 DB_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "notesapp_pg_pw_2024")
 JWT_SECRET = os.environ.get("JWT_SECRET", "s3cr3t")
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-session-key")
+# HMAC key used to sign grade exports. Only the server holds it, so anyone can
+# detect a tampered export but cannot forge a valid signature.
+EXPORT_HMAC_SECRET = os.environ.get("EXPORT_HMAC_SECRET", "export-hmac-secret-2024")
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
@@ -272,6 +275,17 @@ def grades():
     return redirect(url_for("teacher"))
 
 
+def sign_csv(content: str) -> str:
+    """Hex HMAC-SHA256 over the CSV payload (UTF-8 bytes).
+
+    The key lives only on the server, so the signature cannot be forged by
+    anyone who edits the exported file.
+    """
+    return hmac.new(
+        EXPORT_HMAC_SECRET.encode(), content.encode("utf-8"), hashlib.sha256,
+    ).hexdigest()
+
+
 @app.route("/export.csv")
 def export_csv():
     if not login_required("teacher"):
@@ -300,9 +314,17 @@ def export_csv():
     writer.writerow(["student", "class", "grade", "comment"])
     for r in rows:
         writer.writerow([r["student"], r["class"], r["grade"], r["comment"]])
+    content = buf.getvalue()
+    sig = sign_csv(content)
+    # Self-contained file: the HMAC rides along as a trailing comment line, so
+    # a reader can strip it, re-hash the rest, and detect any edit.
+    body = content + "#HMAC:" + sig + "\r\n"
     return Response(
-        buf.getvalue(), mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=grades.csv"},
+        body, mimetype="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=grades.csv",
+            "X-Grades-HMAC": sig,
+        },
     )
 
 
