@@ -19,6 +19,8 @@ from flask import (
     Flask, request, session, redirect, url_for,
     render_template, Response, jsonify, abort,
 )
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, InvalidHash
 
 # --- Configuration ------------------------------------------------------------
 # All configuration comes from the environment (set in docker-compose.yml).
@@ -34,6 +36,12 @@ EXPORT_HMAC_SECRET = os.environ.get("EXPORT_HMAC_SECRET", "export-hmac-secret-20
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
+
+ph = PasswordHasher()
+
+
+def is_argon2_hash(value: str) -> bool:
+    return value.startswith("$argon2")
 
 LOG_FILE = os.environ.get("NOTESAPP_LOG", "/var/log/notesapp/app.log")
 
@@ -149,8 +157,8 @@ def login():
         password = request.form.get("password", "")
         # Flaw #8: SQL injection. Query built by string concatenation, no params.
         query = (
-            "SELECT id, username, role FROM users "
-            "WHERE username = '" + username + "' AND password = '" + password + "'"
+            "SELECT id, username, role, password FROM users "
+            "WHERE username = '" + username + "'"
         )
         conn = get_db()
         cur = conn.cursor()
@@ -161,8 +169,29 @@ def login():
             # Keep the raw error visible - helps the SQLi session.
             error = f"Query error: {e}"
             row = None
-        conn.close()
+
+        authenticated = False
         if row:
+            stored = row["password"]
+            if is_argon2_hash(stored):
+                try:
+                    ph.verify(stored, password)
+                    authenticated = True
+                except (VerifyMismatchError, InvalidHash):
+                    authenticated = False
+            else:
+                # 旧的明文/简单密码：验证成功后自动重哈希升级为 Argon2
+                if stored == password:
+                    authenticated = True
+                    new_hash = ph.hash(password)
+                    cur.execute(
+                        "UPDATE users SET password = %s WHERE id = %s",
+                        (new_hash, row["id"]),
+                    )
+                    log(f"upgraded {row['username']} to argon2")
+
+        conn.close()
+        if authenticated:
             session["user_id"] = row["id"]
             session["username"] = row["username"]
             session["role"] = row["role"]
